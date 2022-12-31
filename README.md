@@ -1,6 +1,6 @@
 # 아두이노 사물인터넷 스마트팜
 
-<img src="https://img.shields.io/badge/이름-색상코드?style=flat-square&logo=로고명&logoColor=로고색"/>
+<img src="https://img.shields.io/badge/arduino-00979D?style=flat-square&logo=arduino"/>
 
 아두이노와 MQTT 프로토콜 통신을 이용하여 웹 대시보드와 통신을 통한
 사물인터넷 스마트팜 프로젝트
