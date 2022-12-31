@@ -2,7 +2,7 @@
 2022년 12월, 웹 대시보드 앱과 연동을 위한 아두이노 코드
 사용언어 : C++, Javascript
 사용 플랫폼 : MQTT
-
+제작 : 문지원
 */
 
 /* 스마트팜에서 입출력 센서를 사용하기 위한 라이브러리를 가져옵니다. */
@@ -20,16 +20,13 @@
 #define DHTPIN 12             // 온습도 핀
 #define DHTTYPE DHT11         // 보드에 장착된 온습도 센서의 모델명
 #define SERVOPIN 9            // 창문(서보모터) 핀
-#define LIGHTPIN 33            // 천장 조명 핀
+#define LIGHTPIN 4         // 천장 조명 핀
 #define FAN_PIN 32            // 팬 핀
 #define WATER_PUMP_PIN 31     // 펌프 핀
 #define CDC_PIN 0
-#define RGB_R 4               // 큰 LED의 빨간색 핀
-#define RGB_G 35              // 큰 LED의 초록색 핀
-#define RGB_B 36              // 큰 LED의 파란색 핀
-#define SEND_DELAY 1000       // 센서값 전송 간격(단위 : ms)
-#define WINDOW_OPEN_ANGLE 80  // 창문이 열렸을때의 서보모터 각도
-#define WINDOW_CLOSE_ANGLE 0  // 창문이 열렸을때의 서보모터 각도
+#define SEND_DELAY 500       // 센서값 전송 간격(단위 : ms)
+#define WINDOW_OPEN_ANGLE 80  // 창문이 열렸을때의 서보모터 각도 (서보모터 설치 위치에 따라 다르기 때문에 추후 수정)
+#define WINDOW_CLOSE_ANGLE 0  // 창문이 열렸을때의 서보모터 각도 (서보모터 설치 위치에 따라 다르기 때문에 추후 수정)
 
 IPAddress server(0, 0, 0, 0); // MQTT 주소
 
@@ -41,16 +38,28 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 WiFiEspClient espClient;
 PubSubClient client(espClient);
 
-const char ssid[] = ""; // 네트워크 이름
-const char pass[] = ""; // 네트워크 비밀번호
+const char ssid[] = "network SSID"; // 네트워크 이름
+const char pass[] = "network Password"; // 네트워크 비밀번호
 
+/*
+아래의 작성 요령)
+const char farmName[] = "Firebase의 스마트팜 문서 아이디";
+const char mqttId[] = "Firebase의 스마트팜 mqttId"
+const char mqttId[] = "Firebase의 스마트팜 mqttId에서re만 붙이도록"
+
+예시)
 const char farmName[] = "SmartFarm1";
-const char mqttId[] = "Farm1";
+const char mqttId[] = "Farm1"
+const char mqttId[] = "Farm1re"
+*/
+const char farmName[] = "";
+const char mqttId[] = "";
+const char mqttIdRe[] = ""; // re부분 제외 mqttId와 동일하게 설정해주세요
 
 bool isFan = false; // 팬이 돌아가고 있는지 여부를 판단합니다.
 bool isWindow = false; // 창문이 열려있는지 확인합니다.
 bool isPump = false; // 펌프 작동여부
-// bool isRTC = false;
+// bool isRTC = false; // RTC 미사용
 
 // 정수형 변수
 int lightBright = 0; // LED 라이트의 밝기를 저장합니다
@@ -74,14 +83,12 @@ bool isHumiAutoUp = false;
 int humiAuto = 0;
 
 
-
-
 void setup() {
   // 시리얼 및 LCD 초기설정
   Serial.begin(115200);
   lcd.init();
   lcd.backlight();
-
+  dht.begin();
   
   Serial.println("[INFO] Starting...");
   printLcd("Check ESP8266");
@@ -94,7 +101,7 @@ void setup() {
     return;
   }
   Serial.println("[INFO] 와이파이와 연결을 시도합니다");
-  printLcd("Connecting to WiFi..");
+  printLcd("CNT to WiFi..");
   WiFi.begin(ssid,pass);
   while (WiFi.status() != WL_CONNECTED)
   {
@@ -103,7 +110,7 @@ void setup() {
   }
   Serial.println();
   Serial.println("[INFO] 네트워크와 연결되었습니다");
-  printLcd("Connected to WiFi");
+  printLcd("CNTED to WiFi");
   delay(500);
   //RTC 모듈 필요시 아래 주석 해제
 //  Serial.println("[INFO] RTC 모듈 시작");
@@ -115,7 +122,7 @@ void setup() {
   printLcd("Setting to MQTT");
   client.setServer(server, 1883); // MQTT 서버를 설정하는 코드이며 MQTT 기본 포트는 1883입니다
   client.setCallback(messageCallback);
-  printLcd("Hello SmartFarm!");
+  servo.attach(SERVOPIN);
   
 }
 
@@ -126,8 +133,20 @@ void loop() {
   if(!client.connected()){
     connect();
   }
+  temp = dht.readTemperature();
+  humid = dht.readHumidity();
+  cdc = map(analogRead(CDC_PIN),0,1023,0,100);
+  bool lightValue = lightBright != 0 ? true : false;
+  String sendMessage = "";
+  sendMessage = String("sensorStatus,")+temp+","+humid+","+cdc+","+lightValue+","+isFan+","+isWindow;
+  char result[50];
+  sendMessage.toCharArray(result,50);
   client.loop();
-  delay(100); // 딜레이가 없으면 ESP에서 와이파이가 끊김
+  client.publish(mqttId,result);
+  conditionCheck();
+  
+  delay(500); // 딜레이가 없으면 ESP에서 와이파이가 끊김
+  
 }
 
 /*
@@ -135,41 +154,32 @@ void loop() {
 */
 void messageCallback(char* topic, byte* payload, unsigned int length) {
   String command = "";
+  // 전달 받은 데이터가 버퍼이기 때문에, 하나씩 가져와서 정수형 변수에 저장
   for (int i=0;i<length;i++) {
     command += (char)payload[i];
   }
-    String sendMessage = "";
-    if(command.indexOf("getSensorAllStatus") != -1){
-      temp = dht.readTemperature(false);
-      humid = dht.readHumidity(false);
-      cdc = map(analogRead(CDC_PIN),0,1023,0,100);
-      bool lightValue = lightBright != 0 ? true : false;
-      sendMessage = String("sensorStatus,")+temp+","+humid+","+cdc+","+lightValue+","+isFan+","+isWindow;
-      char result[50];
-      sendMessage.toCharArray(result,50);
-      client.publish(mqttId,result);
-  }else if(command.indexOf("setAutoCDC"){
-    // setAutoCDC=UP-true,12
+  // 위에서 저장한 정수형 변수의 값에 명령어가 들어있는지 체크하는 조건문
+   if(command.indexOf("setAutoCDC") != -1){
+    // setAutoCDC=UP-true,12 (전송양식)
     isCdcAuto = command.substring(command.indexOf("-")+1,command.indexOf(",")) == "true";
-    isCdcAutoUp = command.indexOf("UP") != -1 ?;
+    isCdcAutoUp = command.indexOf("UP") != -1;
     cdcAuto = command.substring(command.indexOf(",")+1,command.length()).toInt();
-  }else if(command.indexOf("setAutoTemp"){
+  }else if(command.indexOf("setAutoTemp") != -1){
     isTempAuto = command.substring(command.indexOf("-")+1,command.indexOf(",")) == "true";
-    isTempAutoUp = command.indexOf("UP") != -1 ?;
+    isTempAutoUp = command.indexOf("UP") != -1;
     tempAuto = command.substring(command.indexOf(",")+1,command.length()).toInt();
-  }else if(command.indexOf("setAutoHumid"){
+  }else if(command.indexOf("setAutoHumid")!= -1){
     isHumiAuto = command.substring(command.indexOf("-")+1,command.indexOf(",")) == "true";
-    isHumiAutoUp = command.indexOf("UP") != -1 ?;
+    isHumiAutoUp = command.indexOf("UP") != -1;
     humiAuto = command.substring(command.indexOf(",")+1,command.length()).toInt();
-  }else if(command.indexOf("setLight")){
-    // setLight-1
-    controlLight(command.substring(command.indexOf("-")+1,command.length()).toInt())
-  }else if(command.indexOf("setServo")){
-    controlServo(command.substring(command.indexOf("-")+1,command.length()).toInt())
-  }else if(command.indexOf("setFan")){
+  }else if(command.indexOf("setLight") != -1){
+    // setLight-1 (전송양식)
+    controlLight(command.substring(command.indexOf("-")+1,command.length()).toInt());
+  }else if(command.indexOf("setServo") != -1){
+    controlServo(command.substring(command.indexOf("-")+1,command.length()).toInt());
+  }else if(command.indexOf("setFan") != -1){
     controlFan(command.substring(command.indexOf("-")+1,command.length()).toInt());
   }
-  Serial.println(isCdcAuto);
 }
 
 /*
@@ -179,12 +189,12 @@ void messageCallback(char* topic, byte* payload, unsigned int length) {
 void connect() {
   while (!client.connected()) {
     Serial.println("[INFO] MQTT와 연결을 시도합니다");
-    printLcd("Connecting to MQTT..");
+    printLcd("CNT to MQTT..");
     if (client.connect(farmName)) {
       Serial.println("[INFO] MQTT와 연결되었습니다");
-      printLcd("Connected to MQTT");
+      printLcd("CNTED to MQTT");
       client.publish(mqttId,"reconnected");
-      client.subscribe(mqttId);
+      client.subscribe(mqttIdRe);
     } else {
       printLcd("Failed rc ="+client.state());
       Serial.print("[ERROR] MQTT 연결 실패, 오류코드 : rc=");
@@ -228,7 +238,8 @@ void printLcd(String message){
 */
 void controlLight(int value){
   lightBright = value;
-  analogWrite(LIGHTPIN,map(value,0,100,0,255));
+  int val = map(value,0,100,0,1023); // 전달받을 값이 0 ~ 100이기 떄문에 맵핑을 통해서 0 ~ 1023 값으로 변환
+  analogWrite(LIGHTPIN,val);
 }
 /*
  팬을 제어하는데 사용하는 함수입니다
@@ -242,27 +253,27 @@ void controlFan(bool value){
 */
 void controlServo(bool value){
   isWindow = value;
-  servo.write(value);
+  servo.write(value ? WINDOW_OPEN_ANGLE : WINDOW_CLOSE_ANGLE); 
 }
 /*
  각 센서의 센서값을 확인하여 조건변수의 활성화 여부에 따라 자동으로 센서를 키고 끄는 함수입니다
+  대시보드의 조건 
 */
 void conditionCheck(){
-  int reuslt = 0;
   if(isCdcAuto){
     if(isCdcAutoUp && cdcAuto <= cdc){
       controlLight(1);
     }else if(!isCdcAutoUp && cdcAuto >= cdc){
       controlLight(1);
-    }else controlLight(0)
+    }else controlLight(0);
   }
 
   if(isTempAuto){
     
     if(isTempAutoUp && tempAuto <= temp){
       controlServo(1);
-    }else if(!isTempAutoUP && tempAuto >= temp){
-      controlServo(1)
+    }else if(!isTempAutoUp && tempAuto >= temp){
+      controlServo(1);
     }else controlServo(0);
   }
   
